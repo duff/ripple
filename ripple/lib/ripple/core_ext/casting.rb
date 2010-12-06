@@ -12,6 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
+require 'active_support/core_ext/object/blank'
+require 'active_support/core_ext/object/to_json'
+require 'active_support/time_with_zone'
+
 # @private
 class Object
   def self.ripple_cast(value)
@@ -22,7 +26,7 @@ end
 # @private
 class Symbol
   def self.ripple_cast(value)
-    return nil if value.nil?
+    return nil if value.blank?
     value.respond_to?(:to_s) && value.to_s.intern or raise Ripple::PropertyTypeMismatch.new(self, value)
   end
 end
@@ -30,7 +34,7 @@ end
 # @private
 class Numeric
   def self.ripple_cast(value)
-    return nil if value.nil?
+    return nil if value.blank?
     raise Ripple::PropertyTypeMismatch.new(self,value) unless value.respond_to?(:to_i) && value.respond_to?(:to_f)
     float_value = value.to_f
     int_value = value.to_i
@@ -41,15 +45,15 @@ end
 # @private
 class Integer
   def self.ripple_cast(value)
-    return nil if value.nil?
-    value.respond_to?(:to_i) && value.to_i or raise Ripple::PropertyTypeMismatch.new(self, value)
+    return nil if value.nil? || (String === value && value.blank?)
+    !value.is_a?(Symbol) && value.respond_to?(:to_i) && value.to_i or raise Ripple::PropertyTypeMismatch.new(self, value)
   end
 end
 
 # @private
 class Float
   def self.ripple_cast(value)
-    return nil if value.nil?
+    return nil if value.nil? || (String === value && value.blank?)
     value.respond_to?(:to_f) && value.to_f or raise Ripple::PropertyTypeMismatch.new(self, value)
   end
 end
@@ -62,8 +66,7 @@ class String
   end
 end
 
-# Stand-in for true/false property types.
-module Boolean
+boolean_cast = proc do
   def self.ripple_cast(value)
     case value
     when NilClass
@@ -82,19 +85,14 @@ module Boolean
   end
 end
 
-# @private
-class TrueClass
-  def self.ripple_cast(value)
-    Boolean.ripple_cast(value)
-  end
+unless defined?(::Boolean)
+  # Stand-in for true/false property types.
+  module ::Boolean; end
 end
 
-# @private
-class FalseClass
-  def self.ripple_cast(value)
-    Boolean.ripple_cast(value)
-  end
-end
+::Boolean.module_eval(&boolean_cast)
+TrueClass.module_eval(&boolean_cast)
+FalseClass.module_eval(&boolean_cast)
 
 # @private
 class Time
@@ -103,7 +101,7 @@ class Time
   end
 
   def self.ripple_cast(value)
-    return nil if value.nil?
+    return nil if value.blank?
     value.respond_to?(:to_time) && value.to_time or raise Ripple::PropertyTypeMismatch.new(self, value)
   end
 end
@@ -115,7 +113,7 @@ class Date
   end
 
   def self.ripple_cast(value)
-    return nil if value.nil?
+    return nil if value.blank?
     value.respond_to?(:to_date) && value.to_date or raise Ripple::PropertyTypeMismatch.new(self, value)
   end
 end
@@ -127,7 +125,17 @@ class DateTime
   end
 
   def self.ripple_cast(value)
-    return nil if value.nil?
+    return nil if value.blank?
     value.respond_to?(:to_datetime) && value.to_datetime or raise Ripple::PropertyTypeMismatch.new(self, value)
   end
 end
+
+# @private
+module ActiveSupport
+  class TimeWithZone
+    def as_json(options={})
+      self.utc.rfc822
+    end
+  end
+end
+

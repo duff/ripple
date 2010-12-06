@@ -14,8 +14,10 @@
 
 require 'riak'
 require 'active_support/all'
+require 'active_support/json'
 require 'active_model'
 require 'ripple/i18n'
+require 'ripple/core_ext'
 
 # Contains the classes and modules related to the ODM built on top of
 # the basic Riak client.
@@ -36,11 +38,13 @@ module Ripple
   autoload :Property, "ripple/properties"
   autoload :Timestamps
   autoload :Validations
+  autoload :NestedAttributes
 
   # Exceptions
   autoload :PropertyTypeMismatch
 
   # Utilities
+  autoload :Inspection
   autoload :Translation
 
   class << self
@@ -55,17 +59,38 @@ module Ripple
       Thread.current[:ripple_client] = value
     end
 
+    # Sets the global Ripple configuration.
     def config=(hash)
       self.client = nil
-      Thread.current[:config] = hash.symbolize_keys
-    end
-    
-    def config
-      Thread.current[:config] ||= {}
+      @config = hash.symbolize_keys
     end
 
-    def load_config(config_file)
-      self.config = YAML.load_file(File.expand_path config_file).with_indifferent_access[:ripple]
+    # Reads the global Ripple configuration.
+    def config
+      @config ||= {}
+    end
+
+    # Loads the Ripple configuration from a given YAML file.
+    # Evaluates the configuration with ERB before loading.
+    def load_configuration(config_file, config_keys = [:ripple])
+      config_file = File.expand_path(config_file)
+      config_hash = YAML.load(ERB.new(File.read(config_file)).result).with_indifferent_access
+      config_keys.each {|k| config_hash = config_hash[k]}
+      self.config = config_hash || {}
+    rescue Errno::ENOENT
+      raise Ripple::MissingConfiguration.new(config_file)
+    end
+    alias_method :load_config, :load_configuration
+  end
+
+  # Exception raised when the path passed to
+  # {Ripple::load_configuration} does not point to a existing file.
+  class MissingConfiguration < StandardError
+    include Translation
+    def initialize(file_path)
+      super(t("missing_configuration", :file => file_path))
     end
   end
 end
+
+require 'ripple/railtie' if defined? Rails::Railtie

@@ -20,7 +20,7 @@ module Ripple
       include ActiveModel::Dirty
 
       # @private
-      def save
+      def save(*args)
         if result = super
           changed_attributes.clear
         end
@@ -29,7 +29,7 @@ module Ripple
 
       # @private
       def reload
-        returning super do
+        super.tap do
           changed_attributes.clear
         end
       end
@@ -42,7 +42,7 @@ module Ripple
 
       private
       def attribute=(attr_name, value)
-        attribute_will_change!(attr_name)
+        attribute_will_change!(attr_name) if @attributes[attr_name] != value
         super
       end
     end

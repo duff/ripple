@@ -23,7 +23,7 @@ module Ripple
 
         # Instantiates a new record, applies attributes from a block, and saves it
         def create(attrs={}, &block)
-          new(attrs, &block).tap {|s| s.save}
+          new(attrs, &block).tap {|s| s.save }
         end
 
         # Destroys all records one at a time.
@@ -52,9 +52,24 @@ module Ripple
           @new || false
         end
 
+        # Updates a single attribute and then saves the document
+        # NOTE: THIS SKIPS VALIDATIONS! Use with caution.
+        # @return [true,false] whether the document succeeded in saving
+        def update_attribute(attribute, value)
+          send("#{attribute}=", value)
+          save(:validate => false)
+        end
+
+        # Writes new attributes and then saves the document
+        # @return [true,false] whether the document succeeded in saving
+        def update_attributes(attrs)
+          self.attributes = attrs
+          save
+        end
+
         # Saves the document in Riak.
         # @return [true,false] whether the document succeeded in saving
-        def save
+        def save(*args)
           robject.key = key if robject.key != key
           robject.data = attributes_for_persistence
           robject.store(self.class.quorums.slice(:w,:dw))
@@ -70,7 +85,7 @@ module Ripple
         def reload
           return self if new?
           robject.reload(:force => true)
-          @attributes.merge!(@robject.data)
+          @robject.data.except("_type").each { |key, value| send("#{key}=", value) }
           self
         end
 
@@ -88,7 +103,6 @@ module Ripple
           @attributes.freeze; super
         end
 
-        protected
         attr_writer :robject
 
         def robject

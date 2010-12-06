@@ -18,9 +18,9 @@ begin
 rescue LoadError
   warn "Skipping CurbBackend specs, curb library not found."
 else
-  $server = MockServer.new
-  at_exit { $server.stop }
-  
+  $mock_server = DrbMockServer
+  $mock_server.maybe_start
+
   describe Riak::Client::CurbBackend do
     def setup_http_mock(method, uri, options={})
       method = method.to_s.upcase
@@ -31,23 +31,46 @@ else
       body = options[:body] || []
       headers = options[:headers] || {}
       headers['Content-Type'] ||= "text/plain"
-      $server.attach do |env|
-        env["REQUEST_METHOD"].should == method
-        env["PATH_INFO"].should == path
-        env["QUERY_STRING"].should == query
-        [status, headers, Array(body)]
-      end
+      @_mock_set = [status, headers, method, path, query, body]
+      $mock_server.expect(*@_mock_set)
     end
 
     before :each do
-      @client = Riak::Client.new(:port => $server.port) # Point to our mock
-      @backend = Riak::Client::CurbBackend.new(@client)
+      @client = Riak::Client.new(:port => $mock_server.port, :http_backend => :Curb) # Point to our mock
+      @backend = @client.http
+      @_mock_set = false
+    end
+
+    after :each do
+      if @_mock_set
+        $mock_server.satisfied.should be_true("Expected #{@_mock_set.inspect}, failed")
+      end
+      Thread.current[:curl_easy_handle] = nil
     end
 
     it_should_behave_like "HTTP backend"
 
-    after :each do
-      $server.detach
+    it "should split long headers into 8KB chunks" do
+      setup_http_mock(:put, @backend.path("/riak/","foo").to_s, :body => "ok")
+      lambda do
+        @backend.put(200, "/riak/", "foo", "body",{"Long-Header" => (["12345678"*10]*100).join(", ") })
+        headers = @backend.send(:curl).headers
+        headers.should be_kind_of(Array)
+        headers.select {|h| h =~ /^Long-Header:/ }.should have(2).items
+        headers.select {|h| h =~ /^Long-Header:/ }.should be_all {|h| h.size < 8192 }
+      end.should_not raise_error
+    end
+
+    it "should support IO objects as the request body" do
+      file = File.open(File.expand_path("../../fixtures/cat.jpg", __FILE__))
+      lambda do
+        setup_http_mock(:put, @backend.path("/riak/","foo").to_s, :body => "ok")
+        @backend.put(200, "/riak/", "foo", file,{})
+      end.should_not raise_error
+      lambda do
+        setup_http_mock(:post, @backend.path("/riak/","foo").to_s, :body => "ok")
+        @backend.post(200, "/riak/", "foo", file, {})
+      end.should_not raise_error
     end
   end
 end

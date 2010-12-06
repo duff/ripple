@@ -6,14 +6,15 @@ gemspec = Gem::Specification.new do |gem|
   gem.summary = %Q{riak-client is a rich client for Riak, the distributed database by Basho.}
   gem.description = %Q{riak-client is a rich client for Riak, the distributed database by Basho. It supports the full HTTP interface including storage operations, bucket configuration, link-walking and map-reduce.}
   gem.version = File.read('../VERSION').strip
-  gem.email = "seancribbs@gmail.com"
+  gem.email = "sean@basho.com"
   gem.homepage = "http://seancribbs.github.com/ripple"
   gem.authors = ["Sean Cribbs"]
-  gem.add_development_dependency "rspec", "~>2.0.0.beta.11"
+  gem.add_development_dependency "rspec", "~>2.0.0"
   gem.add_development_dependency "fakeweb", ">=1.2"
   gem.add_development_dependency "rack", ">=1.0"
   gem.add_development_dependency "curb", ">=0.6"
-  gem.add_dependency "activesupport", ">= 2.3.5"
+  gem.add_dependency "i18n", "~>0.4.0"
+  gem.add_dependency "builder", "~>2.1.2"
   gem.requirements << "`gem install curb` for better HTTP performance"
 
   files = FileList["**/*"]
@@ -25,7 +26,12 @@ gemspec = Gem::Specification.new do |gem|
   files.exclude '**/*.orig'
   files.exclude '**/*.rej'
   files.exclude /^pkg/
+  files.exclude '**/*.o'
+  files.exclude '**/*.bundle'
+  files.exclude '**/*.a'
+  files.exclude '**/*.so'
   files.exclude 'riak-client.gemspec'
+  files.exclude 'spec/support/test_server.yml'
 
   gem.files = files.to_a
 
@@ -48,7 +54,7 @@ end
 
 desc %{Release the gem to RubyGems.org}
 task :release => :gem do
-  "gem push pkg/#{gemspec.name}-#{gemspec.version}.gem"
+  system "gem push pkg/#{gemspec.name}-#{gemspec.version}.gem"
 end
 
 require 'rspec/core'

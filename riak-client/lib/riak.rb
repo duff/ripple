@@ -13,13 +13,24 @@
 #    limitations under the License.
 $KCODE = "UTF8" if RUBY_VERSION < "1.9"
 
-require 'active_support/all'
-require 'active_support/json'
 require 'base64'
 require 'uri'
+require 'cgi'
+require 'set'
 require 'net/http'
 require 'yaml'
 require 'riak/i18n'
+
+# Load JSON
+unless defined? JSON
+  begin
+    require 'yajl/json_gem'
+  rescue LoadError
+    require 'json'
+  end
+end
+
+require 'riak/core_ext'
 
 # The Riak module contains all aspects of the HTTP client interface
 # to Riak.
@@ -32,7 +43,7 @@ module Riak
   autoload :RObject,         "riak/robject"
   autoload :MapReduce,       "riak/map_reduce"
 
-  # Cache store
+  # Cache store - only supports Rails 3 style
   autoload :CacheStore,      "riak/cache_store"
 
   # Exceptions
@@ -40,6 +51,10 @@ module Riak
   autoload :InvalidResponse, "riak/invalid_response"
   autoload :MapReduceError,  "riak/map_reduce_error"
 
+  # Test server
+  autoload :TestServer,      "riak/test_server"
+
+  # Utility classes and mixins
   module Util
     autoload :Escape,        "riak/util/escape"
     autoload :Headers,       "riak/util/headers"

@@ -121,4 +121,15 @@ describe Ripple::Associations::ManyEmbeddedProxy do
     @user.addresses << @address
     @user.addresses.to_ary.should == [@address]
   end
+
+  it "should refuse assigning documents of the wrong type" do
+    lambda { @user.addresses = nil }.should raise_error
+    lambda { @user.addresses = @address }.should raise_error
+    lambda { @user.addresses = [@note] }.should raise_error
+  end
+  
+  it "should not add the associated validator multiple times" do
+    #$stderr.puts User.validators.collect(&:inspect)
+    User.validators_on(:addresses).count.should eq(1)
+  end
 end

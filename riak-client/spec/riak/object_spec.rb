@@ -88,52 +88,86 @@ describe Riak::RObject do
 
       it "should serialize into a JSON blob" do
         @object.serialize({"foo" => "bar"}).should == '{"foo":"bar"}'
-        @object.serialize(2).should == "2"
-        @object.serialize("Some text").should == '"Some text"'
         @object.serialize([1,2,3]).should == "[1,2,3]"
       end
 
       it "should deserialize a JSON blob" do
         @object.deserialize('{"foo":"bar"}').should == {"foo" => "bar"}
-        @object.deserialize("2").should == 2
-        @object.deserialize('"Some text"').should == "Some text"
         @object.deserialize('[1,2,3]').should == [1,2,3]
       end
     end
 
-    describe "when the content type is an octet-stream" do
+    describe "when the content type is application/x-ruby-marshal" do
       before :each do
-        @object.content_type = "application/octet-stream"
+        @object.content_type = "application/x-ruby-marshal"
+        @payload = Marshal.dump({"foo" => "bar"})
       end
 
-      describe "if the ruby-serialization meta field is set to Marshal" do
-        before :each do
-          @object.meta['ruby-serialization'] = "Marshal"
-          @payload = Marshal.dump({"foo" => "bar"})
+
+      it "should dump via Marshal" do
+        @object.serialize({"foo" => "bar"}).should == @payload
+      end
+
+      it "should load from Marshal" do
+        @object.deserialize(@payload).should == {"foo" => "bar"}
+      end
+    end
+  end
+
+  describe "data access methods" do
+    before :each do
+      @object = Riak::RObject.new(@bucket, "bar")
+      @object.content_type = "application/json"
+    end
+
+    describe "for raw data" do
+      describe "when unserialized data was already provided" do
+        before do
+          @object.data = { :some => :data }
         end
 
-        it "should dump via Marshal" do
-          @object.serialize({"foo" => "bar"}).should == @payload
+        it "should reset unserialized forms when stored" do
+          @object.raw_data = value = '{ "raw": "json" }'
+
+          @object.raw_data.should == value
+          @object.data.should == { "raw" => "json" }
         end
 
-        it "should load from Marshal" do
-          @object.deserialize(@payload).should == {"foo" => "bar"}
+        it "should lazily serialize when read" do
+          @object.raw_data.should == '{"some":"data"}'
         end
       end
 
-      describe "if the ruby-serialization meta field is not set to Marshal" do
-        before :each do
-          @object.meta.delete("ruby-serialization")
+      it "should not unnecessarily marshal/demarshal" do
+        @object.should_not_receive(:serialize)
+        @object.should_not_receive(:deserialize)
+        @object.raw_data = value = "{not even valid json!}}"
+        @object.raw_data.should == value
+      end
+    end
+
+    describe "for unserialized data" do
+      describe "when raw data was already provided" do
+        before do
+          @object.raw_data = '{"some":"data"}'
         end
 
-        it "should dump to a string" do
-          @object.serialize(2).should == "2"
-          @object.serialize("foo").should == "foo"
+        it "should reset previously stored raw data" do
+          @object.data = value = { "new" => "data" }
+          @object.raw_data.should == '{"new":"data"}'
+          @object.data.should == value
         end
 
-        it "should load the body unmodified" do
-          @object.deserialize("foo").should == "foo"
+        it "should lazily deserialize when read" do
+          @object.data.should == { "some" => "data" }
         end
+      end
+
+      it "should not unnecessarily marshal/demarshal" do
+        @object.should_not_receive(:serialize)
+        @object.should_not_receive(:deserialize)
+        @object.data = value = { "some" => "data" }
+        @object.data.should == value
       end
     end
   end
@@ -150,7 +184,14 @@ describe Riak::RObject do
 
     it "should load the body data" do
       @object.load({:headers => {"content-type" => ["application/json"]}, :body => '{"foo":"bar"}'})
+      @object.raw_data.should be_present
       @object.data.should be_present
+    end
+
+    it "should handle raw data properly" do
+      @object.should_not_receive(:deserialize) # optimize for the raw_data case, don't penalize people for using raw_data
+      @object.load({:headers => {"content-type" => ["application/json"]}, :body => body = '{"foo":"bar"}'})
+      @object.raw_data.should == body
     end
 
     it "should deserialize the body data" do
@@ -198,6 +239,11 @@ describe Riak::RObject do
       @object.key.should == "baz"
     end
 
+    it "should parse and escape the location header into the key when present" do
+      @object.load({:headers => {"content-type" => ["application/json"], "location" => ["/riak/foo/%5Bbaz%5D"]}})
+      @object.key.should == "[baz]"
+    end
+
     it "should be in conflict when the response code is 300 and the content-type is multipart/mixed" do
       @object.load({:headers => {"content-type" => ["multipart/mixed; boundary=foo"]}, :code => 300 })
       @object.should be_conflict
@@ -206,6 +252,106 @@ describe Riak::RObject do
     it "should unescape the key given in the location header" do
       @object.load({:headers => {"content-type" => ["application/json"], "location" => ["/riak/foo/baz%20"]}})
       @object.key.should == "baz "
+    end
+  end
+
+  describe "instantiating new object from a map reduce operation" do
+    before :each do
+      @client.stub!(:[]).and_return(@bucket)
+
+      @sample_response = [
+                          {"bucket"=>"users",
+                            "key"=>"A2IbUQ2KEMbe4WGtdL97LoTi1DN%5B%28%5C%2F%29%5D",
+                            "vclock"=> "a85hYGBgzmDKBVIsCfs+fc9gSN9wlA8q/hKosDpIOAsA",
+                            "values"=> [
+                                        {"metadata"=>
+                                          {"Links"=>[["addresses", "A2cbUQ2KEMbeyWGtdz97LoTi1DN", "home_address"]],
+                                            "X-Riak-VTag"=>"5bnavU3rrubcxLI8EvFXhB",
+                                            "content-type"=>"application/json",
+                                            "X-Riak-Last-Modified"=>"Mon, 12 Jul 2010 21:37:43 GMT",
+                                            "X-Riak-Meta"=>{"X-Riak-Meta-King-Of-Robots"=>"I"}},
+                                          "data"=>
+                                          "{\"email\":\"mail@test.com\",\"_type\":\"User\"}"
+                                        }
+                                       ]
+                          }
+                         ]
+      @object = Riak::RObject.load_from_mapreduce(@client,@sample_response).first
+      @object.should be_kind_of(Riak::RObject)
+    end
+
+    it "should load the content type" do
+      @object.content_type.should == "application/json"
+    end
+
+    it "should load the body data" do
+      @object.data.should be_present
+    end
+
+    it "should deserialize the body data" do
+      @object.data.should == {"email" => "mail@test.com", "_type" => "User"}
+    end
+
+    it "should set the vclock" do
+      @object.vclock.should == "a85hYGBgzmDKBVIsCfs+fc9gSN9wlA8q/hKosDpIOAsA"
+    end
+
+    it "should load and parse links" do
+      @object.links.should have(1).item
+      @object.links.first.url.should == "/riak/addresses/A2cbUQ2KEMbeyWGtdz97LoTi1DN"
+      @object.links.first.rel.should == "home_address"
+    end
+
+    it "should set the ETag" do
+      @object.etag.should == "5bnavU3rrubcxLI8EvFXhB"
+    end
+
+    it "should set modified date" do
+      @object.last_modified.to_i.should == Time.httpdate("Mon, 12 Jul 2010 21:37:43 GMT").to_i
+    end
+
+    it "should load meta information" do
+      @object.meta["King-Of-Robots"].should == ["I"]
+    end
+
+    it "should set the key" do
+      @object.key.should == "A2IbUQ2KEMbe4WGtdL97LoTi1DN[(\\/)]"
+    end
+
+    it "should not set conflict when there is none" do
+      @object.conflict?.should be_false
+    end
+
+    describe "when there are multiple values in an object" do
+      before :each do
+        response = @sample_response.dup
+        response[0]['values'] << {
+          "metadata"=> {
+            "Links"=>[],
+            "X-Riak-VTag"=>"7jDZLdu0fIj2iRsjGD8qq8",
+            "content-type"=>"application/json",
+            "X-Riak-Last-Modified"=>"Mon, 14 Jul 2010 19:28:27 GMT",
+            "X-Riak-Meta"=>[]
+          },
+          "data"=> "{\"email\":\"mail@domain.com\",\"_type\":\"User\"}"
+        }
+        @object = Riak::RObject.load_from_mapreduce( @client, response ).first
+      end
+
+      it "should expose siblings" do
+        @object.should have(2).siblings
+        @object.siblings[0].etag.should == "5bnavU3rrubcxLI8EvFXhB"
+        @object.siblings[1].etag.should == "7jDZLdu0fIj2iRsjGD8qq8"
+      end
+
+      it "should be in conflict" do
+        @object.data.should_not be_present
+        @object.should be_conflict
+      end
+
+      it "should assign the same vclock to all the siblings" do
+        @object.siblings.should be_all {|s| s.vclock == @object.vclock }
+      end
     end
   end
 
@@ -248,6 +394,23 @@ describe Riak::RObject do
     it "should exclude the vclock when nil" do
       @object.vclock = nil
       @object.store_headers.should_not have_key("X-Riak-Vclock")
+    end
+
+    describe "when conditional PUTs are requested" do
+      before :each do
+        @object.prevent_stale_writes = true
+      end
+
+      it "should include an If-None-Match: * header" do
+        @object.store_headers.should have_key("If-None-Match")
+        @object.store_headers["If-None-Match"].should == "*"
+      end
+
+      it "should include an If-Match header with the etag when an etag is present" do
+        @object.etag = "foobar"
+        @object.store_headers.should have_key("If-Match")
+        @object.store_headers["If-Match"].should == @object.etag
+      end
     end
 
     describe "when links are defined" do
@@ -360,6 +523,22 @@ describe Riak::RObject do
     describe "when the object has a key" do
       before :each do
         @object.key = "bar"
+      end
+
+      describe "when the content is of a known serializable type" do
+        before :each do
+          @object.content_type = "application/json"
+          @headers = @object.store_headers
+        end
+
+        it "should not serialize content if #raw_data is used" do
+          storing = @object.raw_data = "{this is probably invalid json}}"
+          @http.should_receive(:put).with([200,204,300], "/riak/", "foo/bar", {:returnbody => true}, storing, @headers).and_return({:headers => {"x-riak-vclock" => ["areallylonghashvalue"]}, :code => 204})
+          @object.should_not_receive(:serialize)
+          @object.should_not_receive(:deserialize)
+          @object.store
+          @object.raw_data.should == storing
+        end
       end
 
       it "should issue a PUT request to the bucket, and update the object properties (returning the body by default)" do

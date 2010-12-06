@@ -15,8 +15,8 @@ require 'riak'
 require 'set'
 
 module Riak
-  # Parent class of all object types supported by ripple. {Riak::RObject} represents
-  # the data and metadata stored in a bucket/key pair in the Riak database.
+  # Represents the data and metadata stored in a bucket/key pair in
+  # the Riak database, the base unit of data manipulation.  
   class RObject
     include Util
     include Util::Translation
@@ -33,12 +33,8 @@ module Riak
 
     # @return [String] the Riak vector clock for the object
     attr_accessor :vclock
-    alias_attribute :vector_clock, :vclock
 
-    # @return [Object] the data stored in Riak at this object's key. Varies in format by content-type, defaulting to String from the response body.
-    attr_accessor :data
-
-    # @return [Set<Link>] an Set of {Riak::Link} objects for relationships between this object and other resources
+    # @return [Set<Link>] a Set of {Riak::Link} objects for relationships between this object and other resources
     attr_accessor :links
 
     # @return [String] the ETag header from the most recent HTTP response, useful for caching and reloading
@@ -50,9 +46,25 @@ module Riak
     # @return [Hash] a hash of any X-Riak-Meta-* headers that were in the HTTP response, keyed on the trailing portion
     attr_accessor :meta
 
+    # @return [Boolean] whether to attempt to prevent stale writes using conditional PUT semantics, If-None-Match: * or If-Match: {#etag}
+    # @see http://wiki.basho.com/display/RIAK/REST+API#RESTAPI-Storeaneworexistingobjectwithakey Riak Rest API Docs
+    attr_accessor :prevent_stale_writes
+
+    # Loads a list of RObjects that were emitted from a MapReduce
+    # query.
+    # @param [Client] client A Riak::Client with which the results will be associated
+    # @param [Array<Hash>] response A list of results a MapReduce job. Each entry should contain these keys: bucket, key, vclock, values
+    # @return [Array<RObject>] An array of RObject instances
+    def self.load_from_mapreduce(client, response)
+      response.map do |item|
+        RObject.new(client[CGI.unescape(item['bucket'])], CGI.unescape(item['key'])).load_from_mapreduce(item)
+      end
+    end
+
     # Create a new object manually
     # @param [Bucket] bucket the bucket in which the object exists
     # @param [String] key the key at which the object resides. If nil, a key will be assigned when the object is saved.
+    # @yield self the new RObject
     # @see Bucket#get
     def initialize(bucket, key=nil)
       @bucket, @key = bucket, key
@@ -75,10 +87,64 @@ module Riak
         end
         h
       end
-      @conflict = response[:code].try(:to_i) == 300 && content_type =~ /multipart\/mixed/
+      @conflict = (response[:code].to_i == 300 && content_type =~ /multipart\/mixed/) rescue false
       @siblings = nil
-      @data = deserialize(response[:body]) if response[:body].present?
+      self.raw_data = response[:body] if response[:body].present?
       self
+    end
+
+    # Load object data from a map/reduce response item.
+    # This method is used by RObject::load_from_mapreduce to instantiate the necessary
+    # objects.
+    # @param [Hash] response a response from {Riak::MapReduce}
+    # @return [RObject] self
+    def load_from_mapreduce(response)
+      self.vclock = response['vclock']
+      if response['values'].size == 1
+        value = response['values'].first
+        load_map_reduce_value(value)
+      else
+        @conflict = true
+        @siblings = response['values'].map do |v|
+          RObject.new(self.bucket, self.key) do |robj|
+            robj.vclock = self.vclock
+            robj.load_map_reduce_value(v)
+          end
+        end
+      end
+      self
+    end
+
+    # @return [Object] the unmarshaled form of {#raw_data} stored in riak at this object's key 
+    def data
+      if @raw_data && !@data
+        @data = deserialize(@raw_data)
+        @raw_data = nil
+      end
+      @data
+    end
+
+    # @param [Object] unmarshaled form of the data to be stored in riak. Object will be serialized using {#serialize} if a known content_type is used. Setting this overrides values stored with {#raw_data=}
+    # @return [Object] the object stored
+    def data=(new_data)
+      @raw_data = nil
+      @data = new_data
+    end
+
+    # @return [String] raw data stored in riak for this object's key
+    def raw_data
+      if @data && !@raw_data
+        @raw_data = serialize(@data)
+        @data = nil
+      end
+      @raw_data
+    end
+
+    # @param [String, IO] the raw data to be stored in riak at this key, will not be marshaled or manipulated prior to storage. Overrides any data stored by {#data=}
+    # @return [String] the data stored
+    def raw_data=(new_raw_data)
+      @data = nil
+      @raw_data = new_raw_data
     end
 
     # HTTP header hash that will be sent along when storing the object
@@ -87,6 +153,11 @@ module Riak
       {}.tap do |hash|
         hash["Content-Type"] = @content_type
         hash["X-Riak-Vclock"] = @vclock if @vclock
+        if @prevent_stale_writes && @etag.present?
+          hash["If-Match"] = @etag
+        elsif @prevent_stale_writes
+          hash["If-None-Match"] = "*"
+        end
         unless @links.blank?
           hash["Link"] = @links.reject {|l| l.rel == "up" }.map(&:to_s).join(", ")
         end
@@ -119,7 +190,7 @@ module Riak
       raise ArgumentError, t("content_type_undefined") unless @content_type.present?
       params = {:returnbody => true}.merge(options)
       method, codes, path = @key.present? ? [:put, [200,204,300], "#{escape(@bucket.name)}/#{escape(@key)}"] : [:post, 201, escape(@bucket.name)]
-      response = @bucket.client.http.send(method, codes, @bucket.client.prefix, path, params, serialize(data), store_headers)
+      response = @bucket.client.http.send(method, codes, @bucket.client.prefix, path, params, raw_data, store_headers)
       load(response)
     end
 
@@ -170,21 +241,19 @@ module Riak
     # Automatically serialized formats:
     # * JSON (application/json)
     # * YAML (text/yaml)
-    # * Marshal (application/octet-stream if meta['ruby-serialization'] == "Marshal")
+    # * Marshal (application/x-ruby-marshal)
+    # When given an IO-like object (e.g. File), no serialization will
+    # be done.
     # @param [Object] payload the data to serialize
     def serialize(payload)
       return payload if IO === payload
       case @content_type
       when /json/
-        ActiveSupport::JSON.encode(payload)
+        payload.to_json
       when /yaml/
         YAML.dump(payload)
-      when "application/octet-stream"
-        if @meta['ruby-serialization'] == "Marshal"
-          Marshal.dump(payload)
-        else
-          payload.to_s
-        end
+      when "application/x-ruby-marshal"
+        Marshal.dump(payload)
       else
         payload.to_s
       end
@@ -195,20 +264,16 @@ module Riak
     # Automatically deserialized formats:
     # * JSON (application/json)
     # * YAML (text/yaml)
-    # * Marshal (application/octet-stream if meta['ruby-serialization'] == "Marshal")
+    # * Marshal (application/x-ruby-marshal)
     # @param [String] body the serialized response body
     def deserialize(body)
       case @content_type
       when /json/
-        ActiveSupport::JSON.decode(body)
+        JSON.parse(body)
       when /yaml/
         YAML.load(body)
-      when "application/octet-stream"
-        if @meta['ruby-serialization'] == "Marshal"
-          Marshal.load(body)
-        else
-          body
-        end
+      when "application/x-ruby-marshal"
+        Marshal.load(body)
       else
         body
       end
@@ -216,10 +281,16 @@ module Riak
 
     # @return [String] A representation suitable for IRB and debugging output
     def inspect
-      "#<#{self.class.name} #{url} [#{@content_type}]:#{@data.inspect}>"
+      body = if @data || content_type =~ /json|yaml|marshal/
+               data.inspect
+             else
+               @raw_data && "(#{@raw_data.size} bytes)"
+             end
+      "#<#{self.class.name} #{url} [#{@content_type}]:#{body}>"
     end
 
     # Walks links from this object to other objects in Riak.
+    # @param [Array<Hash,WalkSpec>] link specifications for the query
     def walk(*params)
       specs = WalkSpec.normalize(*params)
       response = @bucket.client.http.get(200, @bucket.client.prefix, escape(@bucket.name), escape(@key), specs.join("/"))
@@ -232,9 +303,11 @@ module Riak
       end
     end
 
-    # Converts the object to a link suitable for linking other objects to it
+    # Converts the object to a link suitable for linking other objects
+    # to it
+    # @param [String] tag the tag to apply to the link
     def to_link(tag)
-      Link.new(@bucket.client.http.path(@bucket.client.prefix, escape(@bucket.name), escape(@key)).path, tag)
+      Link.new(@bucket.name, @key, tag)
     end
 
     # Generates a URL representing the object according to the client, bucket and key.
@@ -246,12 +319,40 @@ module Riak
       @bucket.client.http.path(*segments).to_s
     end
 
+    alias :vector_clock :vclock
+    alias :vector_clock= :vclock=
+
+    protected
+    def load_map_reduce_value(hash)
+      metadata = hash['metadata']
+      extract_if_present(metadata, 'X-Riak-VTag', :etag)
+      extract_if_present(metadata, 'content-type', :content_type)
+      extract_if_present(metadata, 'X-Riak-Last-Modified', :last_modified) { |v| Time.httpdate( v ) }
+      extract_if_present(metadata, 'Links', :links) do |links|
+        Set.new( links.map { |l| Link.new("#{@bucket.client.prefix}#{l[0]}/#{l[1]}", l[2]) } )
+      end
+      extract_if_present(metadata, 'X-Riak-Meta', :meta) do |meta|
+        Hash[
+             meta.map do |k,v|
+               [k.sub(%r{^x-riak-meta-}i, ''), [v]]
+             end
+            ]
+      end
+      extract_if_present(hash, 'data', :data) { |v| deserialize(v) }
+    end
+
     private
-    def extract_header(response, name, attribute=nil)
-      if response[:headers][name].present?
-        value = response[:headers][name].try(:first)
-        value = yield value if block_given?
-        send("#{attribute}=", value) if attribute
+    def extract_if_present(hash, key, attribute=nil)
+      if hash[key].present?
+        attribute ||= key
+        value = block_given? ? yield(hash[key]) : hash[key]
+        send("#{attribute}=", value)
+      end
+    end
+
+    def extract_header(response, name, attribute=nil, &block)
+      extract_if_present(response[:headers], name, attribute) do |value|
+        block ? block.call(value[0]) : value[0]
       end
     end
 

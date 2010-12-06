@@ -15,7 +15,7 @@ require File.expand_path("../../spec_helper", __FILE__)
 
 describe Ripple::AttributeMethods do
   require 'support/models/widget'
-  
+
   before :each do
     @widget = Widget.new
   end
@@ -37,7 +37,7 @@ describe Ripple::AttributeMethods do
       @widget.attributes = {'key' => 'new-key'}
       @widget.key.should == 'widget-key'
     end
-    
+
     it "should typecast the key to a string" do
       @widget.key = 10
       @widget.key.should == "10"
@@ -56,8 +56,9 @@ describe Ripple::AttributeMethods do
 
     it "should return the property default if defined and not set" do
       @widget.name.should == "widget"
+      @widget.manufactured.should == false
     end
-    
+
     it "should allow raw attribute access when accessing the document with []" do
       @widget['name'].should == 'widget'
     end
@@ -78,7 +79,7 @@ describe Ripple::AttributeMethods do
       @widget.size = 10
       @widget.size.should == 10
     end
-    
+
     it "should allow assignment of undefined attributes when assigning to the document with []=" do
       @widget['name'] = 'sprocket'
       @widget.name.should == 'sprocket'
@@ -129,6 +130,13 @@ describe Ripple::AttributeMethods do
     @widget.changes.should == {"name" => ["widget", "foobar"]}
   end
 
+  it "should report that an attribute is changed only if its value actually changes" do
+    @widget.name = "widget"
+    @widget.changed?.should be_false
+    @widget.name_changed?.should be_false
+    @widget.changes.should be_blank
+  end
+
   it "should refresh the attribute methods when adding a new property" do
     Widget.should_receive(:undefine_attribute_methods)
     Widget.property :start_date, Date
@@ -136,7 +144,7 @@ describe Ripple::AttributeMethods do
   end
 
   it "should provide a hash representation of all of the attributes" do
-    @widget.attributes.should == {"name" => "widget", "size" => nil}
+    @widget.attributes.should == {"name" => "widget", "size" => nil, "manufactured" => false, "shipped_at" => nil}
   end
 
   it "should load attributes from mass assignment" do
@@ -154,21 +162,31 @@ describe Ripple::AttributeMethods do
     @widget = Widget.new(:name => "Riak")
     @widget.changes.should be_blank
   end
-  
+
   it "should allow adding to the @attributes hash for attributes that do not exist" do
     @widget = Widget.new
     @widget['foo'] = 'bar'
     @widget.instance_eval { @attributes['foo'] }.should == 'bar'
   end
-  
+
   it "should allow reading from the @attributes hash for attributes that do not exist" do
     @widget = Widget.new
     @widget['foo'] = 'bar'
     @widget['foo'].should == 'bar'
   end
-  
+
   it "should allow a block upon initialization to set attributes protected from mass assignment" do
     @widget = Widget.new { |w| w.key = 'some-key' }
     @widget.key.should == 'some-key'
+  end
+
+  it "should raise an argument error when assigning a non hash to attributes" do
+    @widget = Widget.new
+    lambda { @widget.attributes = nil }.should raise_error(ArgumentError)
+  end
+
+  it "should protect attributes from mass assignment" do
+    @widget = Widget.new(:manufactured => true)
+    @widget.manufactured.should be_false
   end
 end

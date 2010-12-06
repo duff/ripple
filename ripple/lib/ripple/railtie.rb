@@ -12,21 +12,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 require 'ripple'
-require 'rails'
 
-# require in gemfile using
-# <tt>gem "ripple", :require_as => ["ripple", "ripple/railtie"]</tt>
 module Ripple
+  # Railtie for automatic initialization of the Ripple framework
+  # during Rails initialization.
   class Railtie < Rails::Railtie
-    railtie_name :ripple
-    
     initializer "ripple.configure_rails_initialization" do
-      Ripple.load_configuration
+      if File.exist?(Rails.root + "config/ripple.yml")
+        Ripple.load_configuration Rails.root.join('config', 'ripple.yml'), [Rails.env]
+      end
     end
-  end
-  
-  def self.load_configuration
-    config_file = Rails.root.join('config', 'database.yml')
-    self.config = YAML.load_file(File.expand_path config_file).with_indifferent_access[:ripple][Rails.env]
   end
 end

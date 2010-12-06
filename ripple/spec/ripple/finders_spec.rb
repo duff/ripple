@@ -22,13 +22,18 @@ describe Ripple::Document::Finders do
     @client = Ripple.client
     @client.stub!(:http).and_return(@http)
     @bucket = Riak::Bucket.new(@client, "boxes")
-    @client.stub!(:[]).and_return(@bucket)
+    Box.stub!(:bucket).and_return(@bucket)
   end
 
-  it "should return an empty array if no keys are passed to find" do
+  it "should return nil if no keys are passed to find" do
     Box.find().should be_nil
   end
 
+  it "should return nil if no valid keys are passed to find" do
+    Box.find(nil).should be_nil
+    Box.find("").should be_nil
+  end
+  
   it "should raise Ripple::DocumentNotFound if an empty array is passed to find!" do
     lambda { Box.find!() }.should raise_error(Ripple::DocumentNotFound, "Couldn't find document without a key")
   end
@@ -64,6 +69,11 @@ describe Ripple::Document::Finders do
     it "should not raise an exception when finding an existing document with find!" do
       @http.should_receive(:get).with(200, "/riak/", "boxes", "square", {}, {}).and_return({:code => 200, :headers => {"content-type" => ["application/json"]}, :body => '{"shape":"square"}'})
       lambda { Box.find!("square") }.should_not raise_error(Ripple::DocumentNotFound)
+    end
+
+    it "should raise an exception when finding an existing document that has properties we don't know about" do
+      @http.should_receive(:get).with(200, "/riak/", "boxes", "square", {}, {}).and_return({:code => 200, :headers => {"content-type" => ["application/json"]}, :body => '{"non_existent_property":"whatever"}'})
+      lambda { Box.find("square") }.should raise_error
     end
 
     it "should return the document when calling find!" do

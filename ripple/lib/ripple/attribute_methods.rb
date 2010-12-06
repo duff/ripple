@@ -17,6 +17,7 @@ module Ripple
   # Makes ActiveRecord-like attribute accessors based on your
   # {Document}'s properties.
   module AttributeMethods
+    include Translation
     extend ActiveSupport::Concern
     extend ActiveSupport::Autoload
     include ActiveModel::AttributeMethods
@@ -31,6 +32,7 @@ module Ripple
       include Write
       include Query
       include Dirty
+      include ActiveModel::MassAssignmentSecurity
     end
 
     module ClassMethods
@@ -48,8 +50,6 @@ module Ripple
     end
 
     module InstanceMethods
-      attr_accessor :key
-
       # A copy of the values of all attributes in the Document. The result
       # is not memoized, so use sparingly.  This does not include associated objects,
       # nor embedded documents.
@@ -65,7 +65,7 @@ module Ripple
       # @param [Hash] attrs the attributes to assign
       def attributes=(attrs)
         raise ArgumentError, t('attribute_hash') unless Hash === attrs
-        attrs.each do |k,v|
+        sanitize_for_mass_assignment(attrs).each do |k,v|
           next if k.to_sym == :key
           if respond_to?("#{k}=")
             __send__("#{k}=",v)
@@ -73,10 +73,6 @@ module Ripple
             __send__(:attribute=,k,v)
           end
         end
-      end
-
-      def key=(value)
-        @key = value.to_s
       end
 
       # @private
@@ -107,7 +103,7 @@ module Ripple
 
       def attributes_from_property_defaults
         self.class.properties.values.inject({}) do |hash, prop|
-          hash[prop.key] = prop.default if prop.default
+          hash[prop.key] = prop.default unless prop.default.nil?
           hash
         end.with_indifferent_access
       end

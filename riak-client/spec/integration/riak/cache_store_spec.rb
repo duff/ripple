@@ -12,17 +12,33 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 require File.expand_path("../../spec_helper", File.dirname(__FILE__))
+require 'riak/cache_store'
 
 describe Riak::CacheStore do
+  before :all do
+    if $test_server
+      @web_port = 9000
+      $test_server.start
+    end
+  end
+
   before do
-    @cache = ActiveSupport::Cache.lookup_store(:riak_store)
+    @web_port ||= 8098
+    @cache = ActiveSupport::Cache.lookup_store(:riak_store, :port => @web_port)
     @cleanup = true
   end
 
   after do
-    @cache.bucket.keys(:force => true).each do |k|
-      @cache.bucket.delete(k, :rw => 1) unless k.blank?
-    end if @cleanup
+    if @cleanup
+      if $test_server
+        $test_server.recycle
+        Thread.current[:curl_easy_handle] = nil
+      else
+        @cache.bucket.keys(:force => true).each do |k|
+          @cache.bucket.delete(k, :rw => 1) unless k.blank?
+        end
+      end
+    end
   end
 
   describe "Riak integration" do
@@ -45,7 +61,7 @@ describe Riak::CacheStore do
     end
 
     it "should choose the bucket according to the initializer option" do
-      @cache = ActiveSupport::Cache.lookup_store(:riak_store, :bucket => "foobar")
+      @cache = ActiveSupport::Cache.lookup_store(:riak_store, :bucket => "foobar", :port => @web_port)
       @cache.bucket.name.should == "foobar"
     end
 
@@ -54,8 +70,44 @@ describe Riak::CacheStore do
     end
 
     it "should set the N value to the specified value" do
-      @cache = ActiveSupport::Cache.lookup_store(:riak_store, :n_value => 1)
+      @cache = ActiveSupport::Cache.lookup_store(:riak_store, :n_value => 1, :port => @web_port)
       @cache.bucket.n_value.should == 1
+    end
+
+    it "should set the bucket R value to 1 by default" do
+      @cache.bucket.r.should == 1
+    end
+
+    it "should set the bucket R default to the specified value" do
+      @cache = ActiveSupport::Cache.lookup_store(:riak_store, :r => "quorum", :port => @web_port)
+      @cache.bucket.r.should == "quorum"
+    end
+
+    it "should set the bucket W value to 1 by default" do
+      @cache.bucket.w.should == 1
+    end
+
+    it "should set the bucket W default to the specified value" do
+      @cache = ActiveSupport::Cache.lookup_store(:riak_store, :w => "all", :port => @web_port)
+      @cache.bucket.w.should == "all"
+    end
+
+    it "should set the bucket DW value to 0 by default" do
+      @cache.bucket.dw.should == 0
+    end
+
+    it "should set the bucket DW default to the specified value" do
+      @cache = ActiveSupport::Cache.lookup_store(:riak_store, :dw => "quorum", :port => @web_port)
+      @cache.bucket.dw.should == "quorum"
+    end
+
+    it "should set the bucket RW value to quorum by default" do
+      @cache.bucket.rw.should == "quorum"
+    end
+
+    it "should set the bucket RW default to the specified value" do
+      @cache = ActiveSupport::Cache.lookup_store(:riak_store, :rw => "all", :port => @web_port)
+      @cache.bucket.rw.should == "all"
     end
   end
 
@@ -91,20 +143,6 @@ describe Riak::CacheStore do
 
   it "should return the default value when forcing a miss" do
     @cache.fetch('foo', :force => true){'bar'}.should == 'bar'
-  end
-
-  it "should increment an integer value in the cache" do
-    @cache.write('foo', 1, :raw => true)
-    @cache.read('foo', :raw => true).to_i.should == 1
-    @cache.increment('foo')
-    @cache.read('foo', :raw => true).to_i.should == 2
-  end
-
-  it "should decrement an integer value in the cache" do
-    @cache.write('foo', 1, :raw => true)
-    @cache.read('foo', :raw => true).to_i.should == 1
-    @cache.decrement('foo')
-    @cache.read('foo', :raw => true).to_i.should == 0
   end
 
   it "should detect if a value exists in the cache" do
